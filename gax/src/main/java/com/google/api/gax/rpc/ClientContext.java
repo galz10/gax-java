@@ -35,7 +35,9 @@ import com.google.api.core.NanoClock;
 import com.google.api.gax.core.BackgroundResource;
 import com.google.api.gax.core.ExecutorAsBackgroundResource;
 import com.google.api.gax.core.ExecutorProvider;
+import com.google.api.gax.rpc.internal.EnvironmentProvider;
 import com.google.api.gax.rpc.internal.QuotaProjectIdHidingCredentials;
+import com.google.api.gax.rpc.internal.SystemEnvironmentProvider;
 import com.google.api.gax.rpc.mtls.MtlsProvider;
 import com.google.api.gax.tracing.ApiTracerFactory;
 import com.google.api.gax.tracing.BaseApiTracerFactory;
@@ -65,6 +67,7 @@ import org.threeten.bp.Duration;
 @AutoValue
 public abstract class ClientContext {
   private static final String QUOTA_PROJECT_ID_HEADER_KEY = "x-goog-user-project";
+  private static final String API_KEY_HEADER_KEY = "x-goog-api-key";
 
   /**
    * The objects that need to be closed in order to clean up the resources created in the process of
@@ -160,6 +163,18 @@ public abstract class ClientContext {
   }
 
   /**
+   * Returns the API key value. It first tries to retrieve the value from the stub settings. If not
+   * found, it then tries the load the GOOGLE_API_KEY environment variable. If API key is not found,
+   * null will be returned.
+   */
+  static String retrieveApiKey(StubSettings settings, EnvironmentProvider environmentProvider) {
+    if (settings.getApiKey() != null) {
+      return settings.getApiKey();
+    }
+    return environmentProvider.getenv("GOOGLE_API_KEY");
+  }
+
+  /**
    * Instantiates the executor, credentials, and transport context based on the given client
    * settings.
    */
@@ -169,14 +184,22 @@ public abstract class ClientContext {
     ExecutorProvider backgroundExecutorProvider = settings.getBackgroundExecutorProvider();
     final ScheduledExecutorService backgroundExecutor = backgroundExecutorProvider.getExecutor();
 
-    Credentials credentials = settings.getCredentialsProvider().getCredentials();
+    Credentials credentials = null;
+    Map<String, String> headers = getHeadersFromSettings(settings);
+    boolean hasApiKey = headers.containsKey(API_KEY_HEADER_KEY);
 
-    if (settings.getQuotaProjectId() != null) {
-      // If the quotaProjectId is set, wrap original credentials with correct quotaProjectId as
-      // QuotaProjectIdHidingCredentials.
-      // Ensure that a custom set quota project id takes priority over one detected by credentials.
-      // Avoid the backend receiving possibly conflict values of quotaProjectId
-      credentials = new QuotaProjectIdHidingCredentials(credentials);
+    // API key takes precedence, so we only load credentials if API key is not provided.
+    if (!hasApiKey) {
+      credentials = settings.getCredentialsProvider().getCredentials();
+
+      if (settings.getQuotaProjectId() != null) {
+        // If the quotaProjectId is set, wrap original credentials with correct quotaProjectId as
+        // QuotaProjectIdHidingCredentials.
+        // Ensure that a custom set quota project id takes priority over one detected by
+        // credentials.
+        // Avoid the backend receiving possibly conflict values of quotaProjectId
+        credentials = new QuotaProjectIdHidingCredentials(credentials);
+      }
     }
 
     TransportChannelProvider transportChannelProvider = settings.getTransportChannelProvider();
@@ -186,11 +209,11 @@ public abstract class ClientContext {
     if (transportChannelProvider.needsExecutor() && settings.getExecutorProvider() != null) {
       transportChannelProvider = transportChannelProvider.withExecutor(backgroundExecutor);
     }
-    Map<String, String> headers = getHeadersFromSettings(settings);
+
     if (transportChannelProvider.needsHeaders()) {
       transportChannelProvider = transportChannelProvider.withHeaders(headers);
     }
-    if (transportChannelProvider.needsCredentials() && credentials != null) {
+    if (!hasApiKey && transportChannelProvider.needsCredentials() && credentials != null) {
       transportChannelProvider = transportChannelProvider.withCredentials(credentials);
     }
     String endpoint =
@@ -258,7 +281,7 @@ public abstract class ClientContext {
 
   /**
    * Getting a header map from HeaderProvider and InternalHeaderProvider from settings with Quota
-   * Project Id.
+   * Project Id. API key will be added to the header if found.
    */
   private static Map<String, String> getHeadersFromSettings(StubSettings settings) {
     // Resolve conflicts when merging headers from multiple sources
@@ -286,6 +309,11 @@ public abstract class ClientContext {
     effectiveHeaders.putAll(internalHeaders);
     effectiveHeaders.putAll(userHeaders);
     effectiveHeaders.putAll(conflictResolution);
+
+    String apiKey = retrieveApiKey(settings, new SystemEnvironmentProvider());
+    if (apiKey != null) {
+      effectiveHeaders.put(API_KEY_HEADER_KEY, apiKey);
+    }
 
     return ImmutableMap.copyOf(effectiveHeaders);
   }

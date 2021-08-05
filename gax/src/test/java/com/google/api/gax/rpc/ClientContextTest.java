@@ -32,6 +32,7 @@ package com.google.api.gax.rpc;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -41,6 +42,7 @@ import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.core.ExecutorProvider;
 import com.google.api.gax.core.FixedCredentialsProvider;
 import com.google.api.gax.core.FixedExecutorProvider;
+import com.google.api.gax.rpc.internal.EnvironmentProvider;
 import com.google.api.gax.rpc.mtls.MtlsProvider;
 import com.google.api.gax.rpc.mtls.MtlsProvider.MtlsEndpointUsagePolicy;
 import com.google.api.gax.rpc.testing.FakeChannel;
@@ -190,13 +192,26 @@ public class ClientContextTest {
 
     @Override
     public boolean needsCredentials() {
-      return credentials == null;
+      return credentials == null && !headers.containsKey("x-goog-api-key");
     }
 
     @Override
     public TransportChannelProvider withCredentials(Credentials credentials) {
       return new FakeTransportProvider(
           this.transport, this.executor, this.shouldAutoClose, this.headers, credentials);
+    }
+  }
+
+  private static class FakeEnvironmentProvider implements EnvironmentProvider {
+    final String apiKey;
+
+    @Override
+    public String getenv(String name) {
+      return apiKey;
+    }
+
+    FakeEnvironmentProvider(String apiKey) {
+      this.apiKey = apiKey;
     }
   }
 
@@ -768,5 +783,57 @@ public class ClientContextTest {
     context = ClientContext.create(builder.build());
     transportChannel = (FakeTransportChannel) context.getTransportChannel();
     assertThat(transportChannel.getExecutor()).isSameInstanceAs(executorProvider.getExecutor());
+  }
+
+  @Test
+  public void testRetrieveApiKeyFromStubSettings() throws IOException {
+    StubSettings settings = new FakeStubSettings.Builder().setApiKey("stub-setting-key").build();
+    EnvironmentProvider environmentProvider = new FakeEnvironmentProvider("env-key");
+    assertEquals("stub-setting-key", ClientContext.retrieveApiKey(settings, environmentProvider));
+  }
+
+  @Test
+  public void testRetrieveApiKeyFromEnvironmentProvider() throws IOException {
+    StubSettings settings = new FakeStubSettings.Builder().build();
+    EnvironmentProvider environmentProvider = new FakeEnvironmentProvider("env-key");
+    assertEquals("env-key", ClientContext.retrieveApiKey(settings, environmentProvider));
+  }
+
+  @Test
+  public void testRetrieveApiKeyNoApiKey() throws IOException {
+    StubSettings settings = new FakeStubSettings.Builder().build();
+    EnvironmentProvider environmentProvider = new FakeEnvironmentProvider(null);
+    assertNull(ClientContext.retrieveApiKey(settings, environmentProvider));
+  }
+
+  @Test
+  public void testApiKey() throws IOException {
+    FakeStubSettings.Builder builder = new FakeStubSettings.Builder();
+
+    FakeTransportChannel transportChannel = FakeTransportChannel.create(new FakeChannel());
+    FakeTransportProvider transportProvider =
+        new FakeTransportProvider(transportChannel, null, true, null, null);
+    builder.setTransportChannelProvider(transportProvider);
+
+    HeaderProvider headerProvider = Mockito.mock(HeaderProvider.class);
+    Mockito.when(headerProvider.getHeaders()).thenReturn(ImmutableMap.<String, String>of());
+    builder.setHeaderProvider(headerProvider);
+
+    builder.setCredentialsProvider(
+        FixedCredentialsProvider.create(Mockito.mock(Credentials.class)));
+
+    // Set API key.
+    builder.setApiKey("key");
+
+    ClientContext context = ClientContext.create(builder.build());
+
+    // Since API key is provided, credentials shouldn't be loaded.
+    assertNull(context.getCredentials());
+
+    // Check API key is in the transport channel's header.
+    List<BackgroundResource> resources = context.getBackgroundResources();
+    FakeTransportChannel fakeTransportChannel = (FakeTransportChannel) resources.get(0);
+    assertTrue(fakeTransportChannel.getHeaders().containsKey("x-goog-api-key"));
+    assertEquals("key", fakeTransportChannel.getHeaders().get("x-goog-api-key"));
   }
 }
