@@ -213,7 +213,7 @@ public abstract class ClientContext {
     if (transportChannelProvider.needsHeaders()) {
       transportChannelProvider = transportChannelProvider.withHeaders(headers);
     }
-    if (!hasApiKey && transportChannelProvider.needsCredentials() && credentials != null) {
+    if (!hasApiKey && transportChannelProvider.needsCredentials()) {
       transportChannelProvider = transportChannelProvider.withCredentials(credentials);
     }
     String endpoint =

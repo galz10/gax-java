@@ -178,7 +178,7 @@ public class ClientContextTest {
 
     @Override
     public TransportChannel getTransportChannel() throws IOException {
-      if (needsCredentials()) {
+      if (needsCredentials() && !headers.containsKey("x-goog-api-key")) {
         throw new IllegalStateException("Needs Credentials");
       }
       transport.setExecutor(executor);
@@ -192,7 +192,7 @@ public class ClientContextTest {
 
     @Override
     public boolean needsCredentials() {
-      return credentials == null && !headers.containsKey("x-goog-api-key");
+      return credentials == null;
     }
 
     @Override
